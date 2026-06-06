@@ -1,0 +1,13 @@
+[project]
+name = "newcas-danial-2026"
+version = "0.1.0"
+description = "Demo files for IEEE NEWCAS 2026 conference"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    "numpy",
+    "pandas",
+    "plotly",
+    "ipykernel"
+]
