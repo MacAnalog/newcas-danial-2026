@@ -9,6 +9,9 @@
   // Pin this box's interpreter explicitly (handy if auto-detection ever fails).
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
 
+  // uv-managed venv has no pip; tell the Python Envs extension to use uv instead.
+  "ms-python.python-envs.alwaysUseUv": true,
+
   // This box is conference demo code — keep type checking relaxed here even if
   // the workspace default is stricter.
   "python.analysis.typeCheckingMode": "basic",

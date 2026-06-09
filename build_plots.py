@@ -7,7 +7,13 @@ is present, PNG thumbnails into plots/thumbs/ for quick visual QA.
 from __future__ import annotations
 
 import os
+import typing as _t
 from typing import Any, Callable
+
+# score_shaping.py annotates with typing.NotRequired (Python 3.11+). Provide a
+# runtime-only stand-in so this module also imports on 3.10 interpreters.
+if not hasattr(_t, "NotRequired"):
+    _t.NotRequired = _t.Optional  # type: ignore[attr-defined]
 
 import numpy as np
 import numpy.typing as npt
@@ -369,12 +375,104 @@ def fig_contours(x_metric: str = "ugf", y_metric: str = "i(idd_total)") -> go.Fi
     return fig
 
 
+# ============================================================ FIG 5: convergence
+def _best_so_far(score: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    return np.maximum.accumulate(score)
+
+
+def fig_convergence() -> go.Figure:
+    """Aggregate score vs. iteration for the DE runs. Raw trace + best-so-far
+    envelope; the zero line is the feasibility / reward-mode boundary. Linear
+    never crosses it; sigmoid does (and then banks reward)."""
+    sig, lin = ss.load_run("de_sigmoid"), ss.load_run("de_linear")
+    YLO, YHI = -260, 75
+    fig = go.Figure()
+    for df, key, lbl in [(lin, "linear", "Linear"), (sig, "sigmoid", "Sigmoid")]:
+        raw = df["score"].to_numpy()
+        fig.add_trace(go.Scatter(
+            x=df["iter"], y=np.clip(raw, YLO, YHI), name=f"{lbl} (raw)",
+            line=dict(color=ss.COLORS[key], width=1), opacity=0.25,
+            hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(
+            x=df["iter"], y=_best_so_far(raw), name=f"{lbl} (best-so-far)",
+            line=dict(color=ss.COLORS[key], width=3),
+            hovertemplate=f"{lbl}<br>iter %{{x}}<br>best score %{{y:.1f}}<extra></extra>"))
+
+    fig.add_hline(y=0, line=dict(color=ss.COLORS["target"], width=2, dash="dash"),
+                  annotation_text="feasibility (score = 0)", annotation_position="top right")
+
+    sig_best = _best_so_far(sig["score"].to_numpy())
+    if (sig_best >= 0).any():
+        cross = int(np.argmax(sig_best >= 0))
+        fig.add_vline(x=cross, line=dict(color=ss.COLORS["sigmoid"], width=1.2, dash="dot"))
+        fig.add_annotation(x=cross, y=-90, ax=70, ay=0, text=f"sigmoid feasible<br>@ iter {cross}",
+                           font=dict(color=ss.COLORS["sigmoid"], size=12), showarrow=True,
+                           arrowcolor=ss.COLORS["sigmoid"])
+    fig.add_annotation(x=1500, y=-150, text="linear never reaches feasibility",
+                       font=dict(color=ss.COLORS["linear"], size=12), showarrow=False)
+
+    fig.update_xaxes(title="Optimization iteration", range=[0, 2000])
+    fig.update_yaxes(title="Aggregate score  F(x)", range=[YLO, YHI])
+    _style(fig, "Sigmoid shaping reaches the feasible region; linear stalls",
+           "Bold = best score so far; faint = per-iteration score (clipped). Crossing zero means "
+           "all constraints are met and the optimizer switches to banking reward beyond spec.")
+    fig.update_layout(legend=dict(x=0.98, y=0.04, xanchor="right", yanchor="bottom",
+                                  bgcolor="rgba(255,255,255,0.7)"))
+    return fig
+
+
+# ============================================================ FIG 6: distributions
+def fig_distributions() -> go.Figure:
+    """Where each method spends its simulations: histograms of UGF and supply
+    current for Sigmoid / Linear / LHS. Reveals exploration behaviour — sigmoid
+    keeps UGF diversity at low power; linear over-concentrates; LHS sticks at the
+    sub-threshold bias current."""
+    runs = [("sigmoid", ss.load_run("de_sigmoid")),
+            ("linear", ss.load_run("de_linear")),
+            ("lhs", ss.load_run("lhs_baseline"))]
+    names = {"sigmoid": "Sigmoid", "linear": "Linear", "lhs": "LHS"}
+
+    fig = make_subplots(rows=2, cols=3, horizontal_spacing=0.05, vertical_spacing=0.14,
+                        column_titles=[names[k] for k, _ in runs],
+                        row_titles=["Unity-gain freq.", "Supply current"])
+    ugf_bins = dict(start=2, end=9.3, size=0.2)   # log10(Hz)
+    idd_bins = dict(start=0, end=3, size=0.08)     # log10(µA)
+
+    for j, (key, df) in enumerate(runs, start=1):
+        w = np.full(len(df), 100.0 / len(df))
+        fig.add_trace(go.Histogram(
+            x=np.log10(df["ugf"].to_numpy() * 1e6), xbins=ugf_bins, histfunc="sum",
+            y=w, marker_color=ss.COLORS[key], opacity=0.85, showlegend=False,
+            hovertemplate="UGF ~10^%{x:.1f} Hz<br>%{y:.1f}% of sims<extra></extra>"), 1, j)
+        fig.add_trace(go.Histogram(
+            x=np.log10(df["i(idd_total)"].to_numpy()), xbins=idd_bins, histfunc="sum",
+            y=w, marker_color=ss.COLORS[key], opacity=0.85, showlegend=False,
+            hovertemplate="I ~10^%{x:.1f} µA<br>%{y:.1f}% of sims<extra></extra>"), 2, j)
+        # spec-target guides (log10 positions): UGF 200 MHz, current 25 µA
+        fig.add_vline(x=np.log10(200e6), line=dict(color=ss.COLORS["target"], dash="dash"),
+                      row=1, col=j)  # pyright: ignore[reportArgumentType]
+        fig.add_vline(x=np.log10(25), line=dict(color=ss.COLORS["target"], dash="dash"),
+                      row=2, col=j)  # pyright: ignore[reportArgumentType]
+        fig.update_xaxes(title="log₁₀ Hz", row=1, col=j)
+        fig.update_xaxes(title="log₁₀ µA", row=2, col=j)
+    fig.update_yaxes(title="% of sims", row=1, col=1)
+    fig.update_yaxes(title="% of sims", row=2, col=1)
+    _style(fig, "Where each method spends its simulations",
+           "Dashed line = spec target. Sigmoid keeps UGF diversity while pulling current below "
+           "25 µA; linear over-concentrates at high UGF and higher current; LHS stalls at the "
+           "≈5 µA sub-threshold bias.")
+    fig.update_layout(bargap=0.04)
+    return fig
+
+
 # ============================================================ build
 FIGS: dict[str, Callable[[], go.Figure]] = {
     "1_squashing_curves": fig_squash,
     "2_masking_demo": fig_masking,
     "3_tradeoff_outcome": fig_outcome,
     "4_equiscore_contours": fig_contours,
+    "5_convergence_trace": fig_convergence,
+    "6_metric_distributions": fig_distributions,
 }
 
 
@@ -387,6 +485,10 @@ CARDS: list[tuple[str, str, str]] = [
      "Best designs & top-100 clouds — sigmoid meets every spec, linear blows the current budget."),
     ("4_equiscore_contours", "4 · Equi-score landscape",
      "Iso-score contours over two metric axes. Toggle Linear/Sigmoid; drag α."),
+    ("5_convergence_trace", "5 · Convergence trace",
+     "Score vs. iteration — sigmoid crosses into feasibility and banks reward; linear stalls."),
+    ("6_metric_distributions", "6 · Exploration histograms",
+     "Where each method spends its sims: UGF & current for Sigmoid / Linear / LHS."),
 ]
 
 
